@@ -1,6 +1,6 @@
 [package]
 name = "trojan-r"
-version = "2026.08.19"
+version = "2026.8.19"
 authors = ["Page Fault <p4gefau1t@gmail.com>", "some AI"]
 edition = "2024"
 
