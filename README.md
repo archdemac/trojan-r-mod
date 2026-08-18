@@ -181,3 +181,4 @@ make armv7-unknown-linux-musleabihf
 - 新增 `.gitignore`，忽略 `target/` 目录
 - release profile 的 `lto` 由 `true` 改为 `thin`
 - 验证三个构建目标：`cargo zigbuild -r --target x86_64-unknown-linux-musl`、`cargo zigbuild -r --target aarch64-unknown-linux-musl`、`cargo b -r`
+- 修复 `--version` 输出不跟随 Cargo.toml 版本号的问题：`main.rs` 改用 `env!("CARGO_PKG_VERSION")` 动态读取，替代硬编码的 `v0.1.0`

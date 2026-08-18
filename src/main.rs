@@ -12,7 +12,7 @@ mod proxy;
 #[tokio::main]
 async fn main() {
     let matches = Command::new("trojan-r")
-        .version("v0.1.0")
+        .version(env!("CARGO_PKG_VERSION"))
         .arg(
             Arg::new("config")
                 .short('c')
