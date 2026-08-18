@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, Bytes};
-use futures_core::{ready, Future};
-use futures_util::FutureExt;
+use futures_util::{ready, Future, FutureExt};
 use tokio::{
     io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf},
     sync::{
@@ -31,12 +30,16 @@ use std::{
 use super::{trojan::UdpHeader, Address, ProxyTcpStream, ProxyUdpStream, UdpRead, UdpWrite};
 use crate::error::Error;
 
+#[cfg(feature = "server")]
 pub mod acceptor;
+#[cfg(any(feature = "client", feature = "forward"))]
 pub mod connector;
 
 fn new_error<T: ToString>(message: T) -> io::Error {
-    return Error::new(format!("mux: {}", message.to_string())).into();
+    Error::new(format!("mux: {}", message.to_string())).into()
 }
+
+type WriteFuture = Option<Pin<Box<dyn Future<Output = Result<(), SendError<MuxFrame>>> + Send + Sync>>>;
 
 const SMUX_VERSION: u8 = 1;
 const HEADER_LEN: usize = 8;
@@ -60,6 +63,7 @@ enum RequestHeader {
 }
 
 impl RequestHeader {
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     async fn read_from<R>(stream: &mut R) -> io::Result<Self>
     where
         R: AsyncRead + Unpin,
@@ -74,6 +78,7 @@ impl RequestHeader {
         }
     }
 
+    #[cfg_attr(feature = "server", allow(dead_code))]
     async fn write_to<W>(&self, w: &mut W) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
@@ -164,8 +169,7 @@ impl MuxFrame {
             CMD_NOP => MuxFrame::Nop(NopFrame { stream_id }),
             CMD_SYNC => MuxFrame::Sync(SyncFrame { stream_id }),
             CMD_PUSH => {
-                let mut buf = Vec::with_capacity(length as usize);
-                buf.resize(length as usize, 0);
+                let mut buf = vec![0; length as usize];
                 reader.read_exact(&mut buf).await?;
                 MuxFrame::Push(PushFrame {
                     stream_id,
@@ -179,6 +183,7 @@ impl MuxFrame {
     }
 }
 
+#[cfg_attr(feature = "server", allow(dead_code))]
 fn new_key<T>(map: &HashMap<u32, T>, hint: &AtomicU32) -> u32 {
     let init_hint = hint.load(Ordering::Relaxed);
     let mut key = Wrapping(init_hint + 1);
@@ -200,8 +205,7 @@ pub struct MuxStream {
     rx: Receiver<PushFrame>,
     read_buffer: Option<Bytes>,
     write_buffer: Option<Bytes>,
-    write_future:
-        Option<Pin<Box<dyn Future<Output = Result<(), SendError<MuxFrame>>> + Send + Sync>>>,
+    write_future: WriteFuture,
     closed: Arc<AtomicBool>,
 }
 
@@ -322,7 +326,7 @@ impl AsyncWrite for MuxStream {
     }
 
     fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-        return Poll::Ready(Ok(()));
+        Poll::Ready(Ok(()))
     }
 
     fn poll_shutdown(
@@ -387,7 +391,7 @@ impl AsyncWrite for MuxStream {
                 TrySendError::Closed(_) => {}
             }
         }
-        return Poll::Ready(Ok(()));
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -454,7 +458,7 @@ impl UdpWrite for WriteHalf<MuxStream> {
         let len = min(buf.len(), MAX_DATA_LEN);
         let udp_header = UdpHeader::new(addr, len);
         udp_header.write_to(self).await?;
-        self.write(buf).await?;
+        self.write_all(buf).await?;
         Ok(())
     }
 }
@@ -498,10 +502,15 @@ impl MuxStreamHandle {
 struct MuxHandle {
     read_handle: JoinHandle<io::Result<()>>,
     write_handle: JoinHandle<io::Result<()>>,
+    #[cfg_attr(feature = "server", allow(dead_code))]
     write_tx: Sender<MuxFrame>,
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     accept_stream_rx: Arc<Mutex<Receiver<MuxStream>>>,
+    #[cfg_attr(feature = "server", allow(dead_code))]
     mux_map: Arc<Mutex<HashMap<u32, MuxStreamHandle>>>,
+    #[cfg_attr(feature = "server", allow(dead_code))]
     closed: Arc<AtomicBool>,
+    #[cfg_attr(feature = "server", allow(dead_code))]
     stream_id_hint: Arc<AtomicU32>,
 }
 
@@ -577,12 +586,12 @@ impl MuxHandle {
                                             continue;
                                         }
                                     };
-                                    if let Err(_) = tx.send(f).await {
+                                    if tx.send(f).await.is_err() {
                                         log::debug!(
                                             "frame recvd but the stream {:x} is closed",
                                             stream_id
                                         );
-                                        if let Some(_) = mux_map.lock().await.remove(&stream_id) {
+                                        if mux_map.lock().await.remove(&stream_id).is_some() {
                                             echo_finish_frame(stream_id, &write_tx).await?;
                                         }
                                     }
@@ -625,11 +634,11 @@ impl MuxHandle {
                             if let Some(mut frame) = write_rx.recv().await {
                                 match &mut frame {
                                     MuxFrame::Push(p) => {
-                                        assert!(p.data.len() < MAX_DATA_LEN);
+                                        assert!(p.data.len() <= MAX_DATA_LEN);
                                     }
                                     MuxFrame::Finish(f) => {
                                         log::debug!("local shutdown stream {:x}", f.stream_id);
-                                        if let None = mux_map.lock().await.remove(&f.stream_id) {
+                                        if mux_map.lock().await.remove(&f.stream_id).is_none() {
                                             continue;
                                         }
                                     }
@@ -662,12 +671,14 @@ impl MuxHandle {
         }
     }
 
+    #[cfg_attr(feature = "server", allow(dead_code))]
     async fn generate_stream_id(&self) -> u32 {
         let mux_map = self.mux_map.lock().await;
-        let stream_id = new_key(&mux_map, &self.stream_id_hint);
-        stream_id
+        
+        new_key(&mux_map, &self.stream_id_hint)
     }
 
+    #[cfg_attr(feature = "server", allow(dead_code))]
     async fn connect(&self) -> io::Result<MuxStream> {
         let stream_id = self.generate_stream_id().await;
         let (tx, rx) = channel(PRIVATE_CHANNEL_LEN);
@@ -684,6 +695,7 @@ impl MuxHandle {
         Ok(stream)
     }
 
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     async fn accept(&self) -> io::Result<MuxStream> {
         if let Some(stream) = self.accept_stream_rx.lock().await.recv().await {
             Ok(stream)
@@ -693,16 +705,19 @@ impl MuxHandle {
     }
 
     #[inline]
+    #[cfg_attr(feature = "server", allow(dead_code))]
     async fn established_streams(&self) -> usize {
         self.mux_map.lock().await.len()
     }
 
     #[inline]
+    #[cfg_attr(feature = "server", allow(dead_code))]
     fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Relaxed)
     }
 
     #[inline]
+    #[cfg_attr(feature = "server", allow(dead_code))]
     async fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
 
@@ -711,7 +726,7 @@ impl MuxHandle {
         self.write_handle.abort();
 
         let mut mux_map = self.mux_map.lock().await;
-        for (_, stream_handle) in mux_map.iter() {
+        for stream_handle in mux_map.values() {
             stream_handle.close();
         }
         mux_map.clear();

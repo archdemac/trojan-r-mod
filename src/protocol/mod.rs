@@ -12,20 +12,27 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
 use crate::error::Error;
 
+#[cfg(feature = "server")]
 pub mod direct;
+#[cfg(feature = "forward")]
 pub mod dokodemo;
 pub mod mux;
+#[cfg(feature = "server")]
 pub mod plaintext;
+#[cfg(feature = "client")]
 pub mod socks5;
 pub mod tls;
 pub mod trojan;
 pub mod websocket;
 
+#[cfg_attr(not(feature = "client"), allow(dead_code))]
 fn new_error<T: ToString>(message: T) -> io::Error {
-    return Error::new(format!("protocol: {}", message.to_string())).into();
+    Error::new(format!("protocol: {}", message.to_string())).into()
 }
 
 pub trait ProxyTcpStream: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
+
+impl ProxyTcpStream for tokio::net::TcpStream {}
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Address {
     /// Socket address (IP Address)
@@ -42,8 +49,7 @@ pub struct AddressError {
 
 impl From<AddressError> for io::Error {
     fn from(e: AddressError) -> Self {
-        io::Error::new(
-            io::ErrorKind::Other,
+        io::Error::other(
             format!("address error: {}", e.message),
         )
     }
@@ -82,6 +88,7 @@ impl Address {
     const ADDR_TYPE_IPV6: u8 = 4;
 
     #[inline]
+    #[cfg_attr(feature = "server", allow(dead_code))]
     fn new_dummy_address() -> Address {
         Address::SocketAddress(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0))
     }
@@ -170,6 +177,7 @@ impl Address {
         }
     }
 
+    #[cfg_attr(not(feature = "client"), allow(dead_code))]
     fn read_from_buf(buf: &[u8]) -> io::Result<Self> {
         let mut cur = Cursor::new(buf);
         if cur.remaining() < 1 + 1 {
@@ -196,7 +204,7 @@ impl Address {
                 cur.copy_to_slice(&mut domain_name);
                 let port = cur.get_u16();
                 let domain_name = String::from_utf8(domain_name).map_err(|e| {
-                    new_error(format!("invalid utf8 domain name {}", e.to_string()))
+                    new_error(format!("invalid utf8 domain name {}", e))
                 })?;
                 Ok(Address::DomainNameAddress(domain_name, port))
             }
@@ -240,7 +248,7 @@ impl Address {
             Self::DomainNameAddress(domain_name, port) => {
                 buf.put_u8(Self::ADDR_TYPE_DOMAIN_NAME);
                 buf.put_u8(domain_name.len() as u8);
-                buf.put_slice(&domain_name.as_bytes()[..]);
+                buf.put_slice(domain_name.as_bytes());
                 buf.put_u16(*port);
             }
         }
@@ -328,6 +336,7 @@ pub enum AcceptResult<T: ProxyTcpStream, U: ProxyUdpStream> {
 }
 
 impl<T: ProxyTcpStream, U: ProxyUdpStream> AcceptResult<T, U> {
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     pub fn unwrap_tcp_with_addr(self) -> (T, Address) {
         match self {
             Self::Tcp(t) => t,

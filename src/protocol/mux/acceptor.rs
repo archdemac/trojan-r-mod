@@ -60,7 +60,7 @@ impl MuxAcceptor {
                 match result {
                     AcceptResult::Tcp((stream, addr)) => {
                         let accept_stream_tx = accept_stream_tx.clone();
-                        let _: JoinHandle<io::Result<()>> = tokio::spawn(async move {
+                        let handle: JoinHandle<io::Result<()>> = tokio::spawn(async move {
                             let valid_magic_addr = {
                                 match &addr {
                                     Address::DomainNameAddress(domain, port) => {
@@ -70,7 +70,7 @@ impl MuxAcceptor {
                                 }
                             };
                             if !valid_magic_addr {
-                                log::error!("invalid mux magic address {}", addr.to_string());
+                                log::error!("invalid mux magic address {}", addr);
                                 return Err(ErrorKind::InvalidData.into());
                             }
                             log::debug!("new inbound stream for mux");
@@ -93,6 +93,7 @@ impl MuxAcceptor {
                                     .map_err(|_| io::ErrorKind::ConnectionAborted)?;
                             }
                         });
+                        drop(handle);
                     }
                     AcceptResult::Udp(_) => {
                         log::error!("mux: invalid udp stream");

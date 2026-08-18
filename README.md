@@ -115,3 +115,69 @@ make armv7-unknown-linux-musleabihf
 - [trojan](https://github.com/trojan-gfw/trojan)
 
 - [shadowsocks-rust](https://github.com/shadowsocks/shadowsocks-rust)
+
+## 变更记录
+
+### 依赖升级
+
+- 升级 `tokio` 至 1.x（原 ~1.47）
+- 升级 `tokio-rustls` 至 0.26（原 0.22），改用 `ring` 后端，避免 aws-lc-rs 在 musl 交叉编译时的 C 编译依赖
+- 升级 `tokio-tungstenite` 至 0.30（原 0.14）
+- 升级 `clap` 至 4（原 2.33）
+- 升级 `toml` 至 1（原 0.5）
+- 升级 `env_logger` 至 0.11（原 0.8）
+- 升级 `sha2` 至 0.11（原 0.9）
+- 升级 `webpki-roots` 至 1（原 0.21）
+- 升级 `bytes`、`log`、`async-trait`、`serde`、`futures-*` 至最新大版本
+- 移除 `webpki` 依赖（rustls 0.23 改用 `rustls-pki-types`）
+- 新增 `rustls-pemfile` 依赖（rustls 0.23 将 pemfile 移出为独立 crate）
+
+### 代码适配新 API
+
+- `main.rs` 适配 clap 4：改用 `Command`、`Arg::new`、`value_parser`、`get_one`
+- TLS 模块适配 rustls 0.23：改用 builder 模式（`builder_with_provider` + `with_no_client_auth` + `with_single_cert`）
+- TLS 证书加载改用 `rustls-pemfile`（`certs` / `private_key`）
+- TLS 域名校验改用 `ServerName`（替代已移除的 `DNSNameRef`）
+- TLS 密码套件改用 `ALL_CIPHER_SUITES` 与 `CryptoProvider` 自定义配置
+- `proxy/mod.rs` 适配 toml 1.0 错误类型显式转换
+- websocket 模块适配 tokio-tungstenite 0.30：改用 `Bytes::copy_from_slice`
+
+### 消灭警告
+
+- 移除 `socks5/mod.rs` 未使用的 `u8`、`vec` 导入
+- 修复 `UdpAssociateHeader.frag` 字段未使用：读取 UDP 头时校验 FRAG 字段
+- 修复 59 个 clippy 警告（`needless_return`、`unnecessary_unwrap`、`io_other_error`、`to_string_in_format_args` 等）
+- 屏蔽 zig 链接器兼容性提示（`#![allow(linker_messages)]`）
+
+### Feature 门控
+
+- 按 feature 门控模块：`direct`/`plaintext` 仅 server，`dokodemo` 仅 forward，`socks5` 仅 client
+- 按 feature 门控子模块：各协议 `acceptor` 仅 server，`connector` 仅 client/forward
+- 消除非当前 feature 下的 dead code 警告，同时保持 `full` 构建完整
+- 将 `impl ProxyTcpStream for TcpStream` 移至共享的 `protocol/mod.rs`
+
+### 数据部分读写修复
+
+- trojan 首包 hash 读取改为循环累积直到读满或 EOF（原 `read` 可能部分读取导致误判）
+- trojan UDP payload 读取用 `min` 限制长度，防止越界
+- trojan UDP 写入改用 `write_all`，防止部分写入
+- trojan fallback 转发改用 `write_all`，防止部分写入
+- mux UDP 写入改用 `write_all`，防止部分写入
+- mux 断言 `data.len() <= MAX_DATA_LEN`（原 `<` 在数据恰好等于上限时会 panic）
+- socks5 UDP payload 拷贝用 `min` 限制长度，防止越界
+- websocket 二进制消息长度判断改为 `<=`，修正边界处理
+
+### 依赖缩减
+
+- 合并 `futures-core` + `futures-util` 为仅 `futures-util`（其已重新导出 `ready`/`Stream`/`Future`）
+- `tokio` 移除 `rt` feature（`rt-multi-thread` 已隐含）
+- `clap` 精简 features：仅保留 `std`/`help`/`usage`/`error-context`，移除 `color`/`suggestions`
+- `env_logger` 精简 features：仅保留 `auto-color`，移除 `humantime`/`regex`
+- Cargo.lock 包数量由 147 减至 102
+- 二进制体积减小约 22%–25%（native 2.7M→2.1M，x86_64 musl 3.6M→2.7M，aarch64 musl 3.0M→2.3M）
+
+### 其他
+
+- 新增 `.gitignore`，忽略 `target/` 目录
+- release profile 的 `lto` 由 `true` 改为 `thin`
+- 验证三个构建目标：`cargo zigbuild -r --target x86_64-unknown-linux-musl`、`cargo zigbuild -r --target aarch64-unknown-linux-musl`、`cargo b -r`

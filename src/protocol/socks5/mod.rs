@@ -3,7 +3,7 @@ use std::io;
 
 pub mod acceptor;
 
-use std::{fmt::Debug, u8, vec};
+use std::fmt::Debug;
 
 use bytes::{BufMut, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -20,7 +20,7 @@ const CMD_UDP_ASSOCIATE: u8 = 0x03;
 const REPLY_SUCCEEDED: u8 = 0x00;
 
 fn new_error<T: ToString>(message: T) -> io::Error {
-    return Error::new(format!("socks: {}", message.to_string())).into();
+    Error::new(format!("socks: {}", message.to_string())).into()
 }
 
 #[derive(Clone, Debug, Copy)]
@@ -242,12 +242,16 @@ impl UdpAssociateHeader {
         if buf.len() <= 3 {
             return Err(new_error("packet too short"));
         }
+        let frag = buf[2];
+        if frag != 0 {
+            return Err(new_error("fragmented udp packet is not supported"));
+        }
         let addr = Address::read_from_buf(&buf[3..])?;
-        Ok(UdpAssociateHeader::new(0, addr))
+        Ok(UdpAssociateHeader::new(frag, addr))
     }
 
     fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
-        buf.put_slice(&[0x00, 0x00, 0x00]);
+        buf.put_slice(&[0x00, 0x00, self.frag]);
         self.address.write_to_buf(buf);
     }
 

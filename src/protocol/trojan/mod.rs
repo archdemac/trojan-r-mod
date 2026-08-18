@@ -2,23 +2,25 @@ use crate::error::Error;
 use async_trait::async_trait;
 use bytes::BufMut;
 use sha2::{Digest, Sha224};
-use std::{fmt::Write, io};
+use std::{cmp::min, fmt::Write, io};
 use tokio::io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 
 use super::{Address, ProxyTcpStream, ProxyUdpStream, UdpRead, UdpWrite};
 
+#[cfg(feature = "server")]
 pub mod acceptor;
+#[cfg(any(feature = "client", feature = "forward"))]
 pub mod connector;
 
 const HASH_STR_LEN: usize = 56;
 
 fn new_error<T: ToString>(message: T) -> io::Error {
-    return Error::new(format!("trojan: {}", message.to_string())).into();
+    Error::new(format!("trojan: {}", message.to_string())).into()
 }
 
 fn password_to_hash<T: ToString>(s: T) -> String {
     let mut hasher = Sha224::new();
-    hasher.update(&s.to_string().into_bytes());
+    hasher.update(s.to_string().into_bytes());
     let h = hasher.finalize();
     let mut s = String::with_capacity(HASH_STR_LEN);
     for i in h {
@@ -58,11 +60,14 @@ const CMD_UDP_ASSOCIATE: u8 = 0x03;
 /// o  DST.PORT desired destination port in network octet order
 /// ```
 enum RequestHeader {
+    #[cfg_attr(feature = "server", allow(dead_code))]
     TcpConnect([u8; HASH_STR_LEN], Address),
+    #[cfg_attr(feature = "server", allow(dead_code))]
     UdpAssociate([u8; HASH_STR_LEN]),
 }
 
 impl RequestHeader {
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     async fn read_from<R>(
         stream: &mut R,
         valid_hash: &[u8],
@@ -72,9 +77,16 @@ impl RequestHeader {
         R: AsyncRead + Unpin,
     {
         let mut hash_buf = [0u8; HASH_STR_LEN];
-        let len = stream.read(&mut hash_buf).await?;
-        if len != HASH_STR_LEN {
-            first_packet.extend_from_slice(&hash_buf[..len]);
+        let mut filled = 0;
+        while filled < HASH_STR_LEN {
+            match stream.read(&mut hash_buf[filled..]).await {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) => return Err(e),
+            }
+        }
+        if filled != HASH_STR_LEN {
+            first_packet.extend_from_slice(&hash_buf[..filled]);
             return Err(new_error("first packet too short"));
         }
 
@@ -101,6 +113,7 @@ impl RequestHeader {
         }
     }
 
+    #[cfg_attr(feature = "server", allow(dead_code))]
     async fn write_to<W>(&self, w: &mut W) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
@@ -186,10 +199,9 @@ pub struct TrojanUdpReader<T> {
 impl<T: AsyncRead + Unpin + Send + Sync> UdpRead for TrojanUdpReader<T> {
     async fn read_from(&mut self, buf: &mut [u8]) -> io::Result<(usize, Address)> {
         let header = UdpHeader::read_from(&mut self.inner).await?;
-        self.inner
-            .read_exact(&mut buf[..header.payload_len as usize])
-            .await?;
-        Ok((header.payload_len as usize, header.address))
+        let len = min(header.payload_len as usize, buf.len());
+        self.inner.read_exact(&mut buf[..len]).await?;
+        Ok((len, header.address))
     }
 }
 
@@ -202,7 +214,7 @@ impl<T: AsyncWrite + Unpin + Send + Sync> UdpWrite for TrojanUdpWriter<T> {
     async fn write_to(&mut self, buf: &[u8], addr: &Address) -> io::Result<()> {
         let header = UdpHeader::new(addr, buf.len());
         header.write_to(&mut self.inner).await?;
-        self.inner.write(buf).await?;
+        self.inner.write_all(buf).await?;
         Ok(())
     }
 }

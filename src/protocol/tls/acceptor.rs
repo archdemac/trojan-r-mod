@@ -1,16 +1,12 @@
 use crate::protocol::{
-    tls::{get_cipher_suite, load_cert, load_key, new_error},
+    tls::{build_provider, load_cert, load_key, new_error},
     AcceptResult, Address, DummyUdpStream, ProxyAcceptor, ProxyTcpStream,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::{io, path::Path, sync::Arc};
 use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::{
-    rustls::{NoClientAuth, ServerConfig},
-    server::TlsStream,
-    TlsAcceptor,
-};
+use tokio_rustls::{rustls::ServerConfig, server::TlsStream, TlsAcceptor};
 
 #[derive(Deserialize)]
 pub struct TrojanTlsAcceptorConfig {
@@ -47,15 +43,16 @@ impl TrojanTlsAcceptor {
 
         let cert_path = Path::new(&config.cert);
         let key_path = Path::new(&config.key);
-        let certs = load_cert(&cert_path)?;
-        let mut keys = load_key(&key_path)?;
+        let certs = load_cert(cert_path)?;
+        let mut keys = load_key(key_path)?;
 
-        let mut tls_config = ServerConfig::new(NoClientAuth::new());
-        tls_config
-            .set_single_cert(certs, keys.remove(0))
-            .map_err(|e| new_error(format!("invalid cert {}", e.to_string())))?;
-
-        tls_config.ciphersuites = get_cipher_suite(config.cipher.clone())?;
+        let provider = build_provider(config.cipher.clone())?;
+        let tls_config = ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|e| new_error(format!("invalid protocol versions: {}", e)))?
+            .with_no_client_auth()
+            .with_single_cert(certs, keys.remove(0))
+            .map_err(|e| new_error(format!("invalid cert {}", e)))?;
 
         let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
         Ok(Self {

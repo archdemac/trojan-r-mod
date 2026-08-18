@@ -1,34 +1,33 @@
 [package]
 name = "trojan-r"
-version = "0.1.0"
-authors = ["Page Fault <p4gefau1t@gmail.com>"]
+version = "2026.08.19"
+authors = ["Page Fault <p4gefau1t@gmail.com>", "some AI"]
 edition = "2024"
 
 [dependencies]
-bytes = "1.0"
-tokio = {version = "~1.47", features = ["rt", "net", "io-util", "rt-multi-thread", "sync", "macros"]}
-tokio-rustls = "0.22"
+bytes = "1"
+tokio = { version = "1", features = ["net", "io-util", "rt-multi-thread", "sync", "macros"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "ring"] }
 log = "0.4"
 async-trait = "0.1"
-sha2 = "0.9"
-serde = { version = "1.0", features = ["derive"] } 
-env_logger = "0.8"
-toml = "0.5"
-clap = "2.33"
-webpki = "0.21"
-webpki-roots = "0.21"
-tokio-tungstenite = "0.14"
-futures-core = "0.3"
+sha2 = "0.11"
+serde = { version = "1", features = ["derive"] }
+env_logger = { version = "0.11", default-features = false, features = ["auto-color"] }
+toml = "1"
+clap = { version = "4", default-features = false, features = ["std", "help", "usage", "error-context"] }
+webpki-roots = "1"
+tokio-tungstenite = "0.30"
 futures-util = "0.3"
+rustls-pemfile = "2"
 
 [profile.release]
-lto = true
+lto = "thin"
 panic = "abort"
 codegen-units = 1
 strip = true
 
 [features]
-default = ["client"]
+default = ["full"]
 client = []
 server = []
 forward = []

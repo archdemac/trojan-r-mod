@@ -1,4 +1,6 @@
+#[cfg(feature = "server")]
 pub mod acceptor;
+#[cfg(any(feature = "client", feature = "forward"))]
 pub mod connector;
 
 use bytes::{Buf, Bytes};
@@ -6,8 +8,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
 use crate::error::Error;
-use futures_core::{ready, Stream};
-use futures_util::sink::Sink;
+use futures_util::{ready, sink::Sink, Stream};
 use std::{
     io,
     pin::Pin,
@@ -17,7 +18,7 @@ use std::{
 use super::ProxyTcpStream;
 
 fn new_error<T: ToString>(message: T) -> io::Error {
-    return Error::new(format!("websocket: {}", message.to_string())).into();
+    Error::new(format!("websocket: {}", message.to_string())).into()
 }
 
 pub struct BinaryWsStream<T: AsyncRead + AsyncWrite + Send + Sync + Unpin> {
@@ -49,15 +50,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncRead for BinaryWsStre
             if message.is_none() {
                 return Poll::Ready(Err(new_error("websocket stream drained")));
             }
-            let message = message.unwrap().map_err(|e| new_error(e))?;
+            let message = message.unwrap().map_err(new_error)?;
             // binary only
             match message {
                 Message::Binary(binary) => {
-                    if binary.len() < buf.remaining() {
+                    if binary.len() <= buf.remaining() {
                         buf.put_slice(&binary);
                         return Poll::Ready(Ok(()));
                     } else {
-                        self.read_buffer = Some(Bytes::from(binary));
+                        self.read_buffer = Some(binary);
                         continue;
                     }
                 }
@@ -82,11 +83,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncWrite for BinaryWsStr
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
         ready!(Pin::new(&mut self.inner).poll_ready(cx))
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
-        let message = Message::Binary(buf.into());
+            .map_err(|e| io::Error::other(format!("{:?}", e)))?;
+        let message = Message::Binary(Bytes::copy_from_slice(buf));
         Pin::new(&mut self.inner)
             .start_send(message)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+            .map_err(|e| io::Error::other(format!("{:?}", e)))?;
         Poll::Ready(Ok(buf.len()))
     }
 
@@ -94,7 +95,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncWrite for BinaryWsStr
         let inner = Pin::new(&mut self.inner);
         inner
             .poll_flush(cx)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))
+            .map_err(|e| io::Error::other(format!("{:?}", e)))
     }
 
     fn poll_shutdown(
@@ -102,22 +103,22 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncWrite for BinaryWsStr
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), io::Error>> {
         ready!(Pin::new(&mut self.inner).poll_ready(cx))
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+            .map_err(|e| io::Error::other(format!("{:?}", e)))?;
         let message = Message::Close(None);
         let _ = Pin::new(&mut self.inner).start_send(message);
 
         let inner = Pin::new(&mut self.inner);
         inner
             .poll_close(cx)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))
+            .map_err(|e| io::Error::other(format!("{:?}", e)))
     }
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> BinaryWsStream<T> {
     pub fn new(inner: WebSocketStream<T>) -> Self {
-        return Self {
+        Self {
             inner,
             read_buffer: None,
-        };
+        }
     }
 }

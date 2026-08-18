@@ -2,16 +2,21 @@ use crate::protocol::{Address, DummyUdpStream, ProxyConnector, ProxyTcpStream};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::{
-    fs::File,
-    io::{self, BufReader},
+    io,
     path::Path,
     sync::Arc,
 };
 use tokio::net::TcpStream;
-use tokio_rustls::{client::TlsStream, rustls::ClientConfig, TlsConnector};
-use webpki::DNSNameRef;
+use tokio_rustls::{
+    client::TlsStream,
+    rustls::{
+        pki_types::ServerName,
+        ClientConfig, RootCertStore,
+    },
+    TlsConnector,
+};
 
-use super::get_cipher_suite;
+use super::{build_provider, load_cert};
 
 #[derive(Deserialize)]
 pub struct TrojanTlsConnectorConfig {
@@ -31,21 +36,24 @@ impl ProxyTcpStream for TlsStream<TcpStream> {}
 
 impl TrojanTlsConnector {
     pub fn new(config: &TrojanTlsConnectorConfig) -> io::Result<Self> {
-        let mut tls_config = ClientConfig::new();
-
-        tls_config.ciphersuites = get_cipher_suite(config.cipher.clone())?;
-
+        let mut root_store = RootCertStore::empty();
         if let Some(ref cert_path) = config.cert {
-            let cert_path = Path::new(cert_path);
-            tls_config
-                .root_store
-                .add_pem_file(&mut BufReader::new(File::open(cert_path)?))
-                .unwrap();
+            let certs = load_cert(Path::new(cert_path))?;
+            for cert in certs {
+                root_store
+                    .add(cert)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+            }
         } else {
-            tls_config
-                .root_store
-                .add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
+            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         }
+
+        let provider = build_provider(config.cipher.clone())?;
+        let tls_config = ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
 
         Ok(Self {
             sni: config.sni.clone(),
@@ -64,10 +72,10 @@ impl ProxyConnector for TrojanTlsConnector {
         let stream = TcpStream::connect(&self.server_addr).await?;
         stream.set_nodelay(true)?;
 
-        let dns_name = DNSNameRef::try_from_ascii_str(&self.sni)
-            .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e.to_string()))?;
+        let server_name = ServerName::try_from(self.sni.clone())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
         let stream = TlsConnector::from(self.tls_config.clone())
-            .connect(dns_name, stream)
+            .connect(server_name, stream)
             .await?;
 
         log::info!("connected to {}", self.server_addr);

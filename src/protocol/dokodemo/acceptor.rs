@@ -82,7 +82,7 @@ impl ProxyAcceptor for DokodemoAcceptor {
             return Ok(AcceptResult::Udp(udp_stream));
         }
         let (stream, addr) = self.tcp_listener.accept().await?;
-        log::info!("tcp connection from {}", addr.to_string());
+        log::info!("tcp connection from {}", addr);
         Ok(AcceptResult::Tcp((stream, self.target_addr.clone())))
     }
 }

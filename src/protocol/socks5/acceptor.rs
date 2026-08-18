@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
 use serde::Deserialize;
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{cmp::min, io, net::SocketAddr, sync::Arc};
 use tokio::{
     io::AsyncReadExt,
     net::{TcpListener, TcpStream, UdpSocket},
@@ -16,7 +16,7 @@ use super::{
     UdpAssociateHeader, AUTH_METHOD_NONE,
 };
 use crate::protocol::{
-    AcceptResult, Address, ProxyAcceptor, ProxyTcpStream, ProxyUdpStream, UdpRead, UdpWrite,
+    AcceptResult, Address, ProxyAcceptor, ProxyUdpStream, UdpRead, UdpWrite,
 };
 
 #[derive(Deserialize)]
@@ -46,18 +46,20 @@ impl UdpRead for Socks5UdpStream {
             }
         };
 
-        let src_address = self.src_addr.read().await.clone();
-        if src_address.is_none() {
+        let src_address = *self.src_addr.read().await;
+        if let Some(src) = src_address {
+            if src != addr {
+                return Err(new_error("udp packet from unknown source"));
+            }
+        } else {
             // first packet
             self.src_addr.write().await.replace(addr);
-        } else if src_address.unwrap() != addr {
-            return Err(new_error("udp packet from unknown source"));
         }
         log::debug!("recv_len={}", recv_len);
         let header = UdpAssociateHeader::read_from_buf(&recv_buf[..recv_len])?;
         let header_len = header.serialized_len();
-        let payload_len = recv_len - header_len;
-        buf[..payload_len].copy_from_slice(&recv_buf[header_len..recv_len]);
+        let payload_len = min(recv_len - header_len, buf.len());
+        buf[..payload_len].copy_from_slice(&recv_buf[header_len..header_len + payload_len]);
         log::debug!("payload={}, addr={}", payload_len, header.address);
         Ok((payload_len, header.address))
     }
@@ -115,8 +117,6 @@ impl Socks5Acceptor {
         Ok(Self { tcp_listener })
     }
 }
-
-impl ProxyTcpStream for TcpStream {}
 
 #[async_trait]
 impl ProxyAcceptor for Socks5Acceptor {
